@@ -1,0 +1,6 @@
+{
+  "name": "Estúdio Alfabetizar",
+  "description": "Sistema online gratuito para professores do ensino primário criarem atividades visuais de alfabetização e matemática inicial com IA, busca de referências na web e impressão em folha A4.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
