@@ -1,0 +1,196 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Hardened Global Helpers
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'gustavoacs2000@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Anti-Update-Gap)
+    // =========================================================================
+    function isValidCommunityWorksheet(data) {
+      return data.keys().hasAll([
+        'title',
+        'theme',
+        'pedagogicalGoal',
+        'activityType',
+        'difficulty',
+        'authorId',
+        'authorName',
+        'visibility',
+        'worksheetData',
+        'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'title',
+        'theme',
+        'pedagogicalGoal',
+        'activityType',
+        'difficulty',
+        'authorId',
+        'authorName',
+        'visibility',
+        'worksheetData',
+        'createdAt'
+      ]) &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+      data.theme is string && data.theme.size() >= 1 && data.theme.size() <= 80 &&
+      data.pedagogicalGoal is string && data.pedagogicalGoal.size() >= 1 && data.pedagogicalGoal.size() <= 160 &&
+      data.activityType is string && data.activityType in ['syllables', 'visual_math', 'matching', 'word_puzzle'] &&
+      data.difficulty is string && data.difficulty in ['facil', 'medio', 'desafio'] &&
+      data.authorId is string && data.authorId.size() >= 1 && data.authorId.size() <= 128 && data.authorId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.authorId == request.auth.uid &&
+      data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 80 &&
+      data.visibility is string && data.visibility in ['public', 'private'] &&
+      data.worksheetData is map && data.worksheetData.size() <= 20 &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasAll([
+        'actionType',
+        'summary',
+        'theme',
+        'activityType',
+        'userId',
+        'userName',
+        'visibility',
+        'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'actionType',
+        'summary',
+        'theme',
+        'activityType',
+        'userId',
+        'userName',
+        'visibility',
+        'createdAt'
+      ]) &&
+      data.actionType is string && data.actionType in ['generate_ai', 'share_community', 'print_a4', 'upload_example', 'search_web'] &&
+      data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 200 &&
+      data.theme is string && data.theme.size() >= 1 && data.theme.size() <= 80 &&
+      data.activityType is string && data.activityType in ['syllables', 'visual_math', 'matching', 'word_puzzle'] &&
+      data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.userId == request.auth.uid &&
+      data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80 &&
+      data.visibility is string && data.visibility in ['public'] &&
+      data.createdAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection 1: /community_worksheets/{worksheetId}
+    // =========================================================================
+    match /community_worksheets/{worksheetId} {
+      allow get: if isValidId(worksheetId) && (
+        existing().visibility == 'public' ||
+        (isSignedIn() && existing().authorId == request.auth.uid) ||
+        isAdmin()
+      );
+
+      // Cost-optimization & Query Enforcer: no get()/exists() in list
+      allow list: if existing().visibility == 'public' ||
+        (isSignedIn() && existing().authorId == request.auth.uid);
+
+      allow create: if isVerifiedUser() &&
+        isValidId(worksheetId) &&
+        isValidCommunityWorksheet(incoming()) &&
+        incoming().createdAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(worksheetId) &&
+        isValidCommunityWorksheet(incoming()) && (
+          (
+            existing().authorId == request.auth.uid &&
+            incoming().authorId == existing().authorId &&
+            incoming().createdAt == existing().createdAt &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'title',
+              'theme',
+              'pedagogicalGoal',
+              'activityType',
+              'difficulty',
+              'authorName',
+              'visibility',
+              'worksheetData'
+            ])
+          ) ||
+          isAdmin()
+        );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(worksheetId) && (
+          existing().authorId == request.auth.uid ||
+          isAdmin()
+        );
+    }
+
+    // =========================================================================
+    // Collection 2: /activity_logs/{logId}
+    // =========================================================================
+    match /activity_logs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (
+        existing().visibility == 'public' ||
+        existing().userId == request.auth.uid ||
+        isAdmin()
+      );
+
+      // Cost-optimization & Query Enforcer: no get()/exists() in list
+      allow list: if isSignedIn() && (
+        existing().visibility == 'public' ||
+        existing().userId == request.auth.uid
+      );
+
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidActivityLog(incoming()) &&
+        incoming().createdAt == request.time;
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser() && isValidId(logId) && isAdmin();
+    }
+
+    // =========================================================================
+    // Collection 3: /admins/{adminId}
+    // =========================================================================
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+  }
+}

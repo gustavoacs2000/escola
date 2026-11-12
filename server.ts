@@ -259,6 +259,115 @@ Estruture a resposta em Markdown claro e objetivo contendo:
     }
   });
 
+  // 4. Analyze an uploaded example worksheet photo/image and convert it into a structured editable A4 worksheet
+  app.post('/api/worksheets/analyze-example', async (req, res) => {
+    try {
+      const { imageBase64, mimeType = 'image/png', customNotes = '' } = req.body || {};
+      if (!imageBase64) {
+        return res.status(400).json({ error: 'Envie uma imagem de exemplo para análise.' });
+      }
+
+      const ai = getAiClient();
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: {
+          parts: [
+            {
+              inlineData: {
+                mimeType,
+                data: imageBase64,
+              },
+            },
+            {
+              text: `Analise esta imagem de uma folha de atividade infantil enviada por um professor.
+Observações adicionais do professor: "${customNotes}".
+Extraia ou adapte o conteúdo da imagem para criar uma folha A4 editável equivalente em Português do Brasil.
+Escolha o formato mais próximo em "activityType": "syllables" (completar sílabas), "visual_math" (contagem/soma visual), "matching" (ligar figuras a palavras) ou "word_puzzle" (caça-palavras/cruzadinha).
+Para cada palavra ou item, separe as sílabas corretamente e escolha o melhor "iconKey" da lista: [${AVAILABLE_ICON_KEYS.join(', ')}].`,
+            },
+          ],
+        },
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              theme: { type: Type.STRING },
+              pedagogicalGoal: { type: Type.STRING },
+              activityType: { type: Type.STRING },
+              instruction: { type: Type.STRING },
+              teacherTip: { type: Type.STRING },
+              bnccCode: { type: Type.STRING },
+              syllableItems: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    word: { type: Type.STRING },
+                    syllables: { type: Type.ARRAY, items: { type: Type.STRING } },
+                    missingIndex: { type: Type.INTEGER },
+                    iconKey: { type: Type.STRING },
+                  },
+                  required: ['word', 'syllables', 'missingIndex', 'iconKey'],
+                },
+              },
+              mathItems: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    leftCount: { type: Type.INTEGER },
+                    rightCount: { type: Type.INTEGER },
+                    operator: { type: Type.STRING },
+                    visualStyle: { type: Type.STRING },
+                    iconKey: { type: Type.STRING },
+                    itemLabel: { type: Type.STRING },
+                  },
+                  required: ['leftCount', 'rightCount', 'operator', 'visualStyle', 'iconKey', 'itemLabel'],
+                },
+              },
+              matchingItems: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    word: { type: Type.STRING },
+                    syllableHint: { type: Type.STRING },
+                    iconKey: { type: Type.STRING },
+                  },
+                  required: ['word', 'syllableHint', 'iconKey'],
+                },
+              },
+              puzzleWords: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    word: { type: Type.STRING },
+                    hint: { type: Type.STRING },
+                    iconKey: { type: Type.STRING },
+                  },
+                  required: ['word', 'hint', 'iconKey'],
+                },
+              },
+            },
+            required: ['title', 'theme', 'pedagogicalGoal', 'activityType', 'instruction'],
+          },
+        },
+      });
+
+      const parsed = JSON.parse((response.text ?? '{}').trim());
+      res.json(parsed);
+    } catch (error: any) {
+      console.error('Error analyzing uploaded example:', error);
+      res.status(500).json({
+        error: error?.message || 'Não foi possível analisar a imagem enviada.',
+      });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

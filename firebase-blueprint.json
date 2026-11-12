@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "CommunityWorksheet": {
+      "title": "CommunityWorksheet",
+      "description": "A shared or saved primary school worksheet created or uploaded by a teacher.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Worksheet title",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "theme": {
+          "type": "string",
+          "description": "Playful theme of the worksheet",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "pedagogicalGoal": {
+          "type": "string",
+          "description": "Pedagogical literacy or math goal",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "activityType": {
+          "type": "string",
+          "description": "Visual format of the worksheet",
+          "enum": ["syllables", "visual_math", "matching", "word_puzzle"]
+        },
+        "difficulty": {
+          "type": "string",
+          "description": "Difficulty tier",
+          "enum": ["facil", "medio", "desafio"]
+        },
+        "authorId": {
+          "type": "string",
+          "description": "UID of the teacher who published the worksheet",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Display name of the teacher (no PII email)",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Visibility of the worksheet",
+          "enum": ["public", "private"]
+        },
+        "worksheetData": {
+          "type": "object",
+          "description": "Native Firestore map with structured worksheet items"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        }
+      },
+      "required": [
+        "title",
+        "theme",
+        "pedagogicalGoal",
+        "activityType",
+        "difficulty",
+        "authorId",
+        "authorName",
+        "visibility",
+        "worksheetData",
+        "createdAt"
+      ]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Audit and activity record of actions performed inside Estudio Alfabetizar.",
+      "type": "object",
+      "properties": {
+        "actionType": {
+          "type": "string",
+          "description": "Type of studio action recorded",
+          "enum": ["generate_ai", "share_community", "print_a4", "upload_example", "search_web"]
+        },
+        "summary": {
+          "type": "string",
+          "description": "Human-readable description of the activity",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "theme": {
+          "type": "string",
+          "description": "Theme associated with the action",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "activityType": {
+          "type": "string",
+          "description": "Activity format associated with the action",
+          "enum": ["syllables", "visual_math", "matching", "word_puzzle"]
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the authenticated user",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the teacher",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Visibility scope for secure list querying",
+          "enum": ["public"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the event"
+        }
+      },
+      "required": [
+        "actionType",
+        "summary",
+        "theme",
+        "activityType",
+        "userId",
+        "userName",
+        "visibility",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/community_worksheets/{worksheetId}": {
+      "schema": { "$ref": "#/entities/CommunityWorksheet" },
+      "description": "Stores shared community worksheets and teacher-saved cloud worksheets."
+    },
+    "/activity_logs/{logId}": {
+      "schema": { "$ref": "#/entities/ActivityLog" },
+      "description": "Stores audit logs of actions performed inside the studio."
+    },
+    "/admins/{adminId}": {
+      "schema": "AdminRecord",
+      "description": "Trusted admin lookup collection."
+    }
+  }
+}

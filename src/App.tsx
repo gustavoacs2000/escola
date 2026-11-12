@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
 import {
   Printer,
   CheckCircle2,
@@ -9,6 +10,7 @@ import {
   Frame,
   BookOpen,
   Wand2,
+  Share2,
 } from 'lucide-react';
 import {
   ActivityType,
@@ -18,7 +20,14 @@ import {
 import { PRESET_WORKSHEETS, QUICK_THEMES } from './data/presetWorksheets';
 import { WorksheetCanvasA4 } from './components/WorksheetCanvasA4';
 import { WebReferencePanel } from './components/WebReferencePanel';
+import { CommunityLibraryPanel } from './components/CommunityLibraryPanel';
 import { generateLocalPedagogicalWorksheet } from './utils/localPedagogicalEngine';
+import {
+  auth,
+  publishWorksheetToCloud,
+  recordStudioActivityLog,
+  signInWithGoogle,
+} from './lib/firebase';
 
 const STORAGE_KEY = 'estudio_alfabetizar_saved_v1';
 
@@ -51,8 +60,11 @@ const ACTIVITY_TYPE_OPTIONS: Array<{
 
 export default function App() {
   const [activeNavTab, setActiveNavTab] = useState<
-    'generator' | 'web_search' | 'presets' | 'saved'
+    'generator' | 'community' | 'web_search' | 'saved'
   >('generator');
+
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
 
   const [worksheet, setWorksheet] = useState<WorksheetDocument>(PRESET_WORKSHEETS[0]);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
@@ -80,6 +92,14 @@ export default function App() {
   });
 
   useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(savedWorksheets));
     } catch {
@@ -88,10 +108,16 @@ export default function App() {
   }, [savedWorksheets]);
 
   const handlePrintA4 = () => {
+    recordStudioActivityLog({
+      actionType: 'print_a4',
+      summary: `Exportou/imprimiu a folha A4 "${worksheet.title}"`,
+      theme: worksheet.theme,
+      activityType: worksheet.activityType,
+    }).catch(() => {});
     window.print();
   };
 
-  const handleSaveToNotebook = () => {
+  const handleSaveToNotebook = async () => {
     const exists = savedWorksheets.some((w) => w.id === worksheet.id);
     const updatedToSave: WorksheetDocument = {
       ...worksheet,
@@ -99,8 +125,27 @@ export default function App() {
       createdAt: new Date().toISOString(),
     };
     setSavedWorksheets([updatedToSave, ...savedWorksheets]);
-    setSaveFeedback('Atividade salva no Meu Caderno!');
+    setSaveFeedback('Salvo no Caderno!');
     setTimeout(() => setSaveFeedback(null), 2800);
+  };
+
+  const handleQuickShareCommunity = async () => {
+    try {
+      if (!auth.currentUser) {
+        await signInWithGoogle();
+      }
+      await publishWorksheetToCloud(worksheet, 'public');
+      await recordStudioActivityLog({
+        actionType: 'share_community',
+        summary: `Compartilhou "${worksheet.title}" na Biblioteca Comunitária`,
+        theme: worksheet.theme,
+        activityType: worksheet.activityType,
+      });
+      setSaveFeedback('Publicado na Comunidade!');
+      setTimeout(() => setSaveFeedback(null), 3200);
+    } catch {
+      setActiveNavTab('community');
+    }
   };
 
   const handleDeleteSaved = (id: string) => {
@@ -212,8 +257,13 @@ export default function App() {
       };
 
       setWorksheet(newDoc);
+      recordStudioActivityLog({
+        actionType: 'generate_ai',
+        summary: `Gerou atividade "${newDoc.title}" (${finalGoal})`,
+        theme: finalTheme,
+        activityType: finalType,
+      }).catch(() => {});
     } catch {
-      // Seamless zero-cost local generation (ensures 100% free functionality even on static GitHub Pages)
       const localDoc = generateLocalPedagogicalWorksheet({
         theme: finalTheme,
         pedagogicalGoal: finalGoal,
@@ -222,6 +272,12 @@ export default function App() {
         baseHeader: worksheet.header,
       });
       setWorksheet(localDoc);
+      recordStudioActivityLog({
+        actionType: 'generate_ai',
+        summary: `Criou atividade "${localDoc.title}" (${finalGoal})`,
+        theme: finalTheme,
+        activityType: finalType,
+      }).catch(() => {});
     } finally {
       setIsGenerating(false);
     }
@@ -260,6 +316,17 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveNavTab('community')}
+            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer pb-0.5 ${
+              activeNavTab === 'community'
+                ? 'text-slate-900 font-semibold border-b-2 border-sky-600'
+                : ''
+            }`}
+          >
+            Biblioteca Comunitária
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveNavTab('web_search')}
             className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer pb-0.5 ${
               activeNavTab === 'web_search'
@@ -268,17 +335,6 @@ export default function App() {
             }`}
           >
             Referências Web
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveNavTab('presets')}
-            className={`hover:text-slate-900 transition-colors whitespace-nowrap shrink-0 cursor-pointer pb-0.5 ${
-              activeNavTab === 'presets'
-                ? 'text-slate-900 font-semibold border-b-2 border-sky-600'
-                : ''
-            }`}
-          >
-            Modelos Prontos
           </button>
           <button
             type="button"
@@ -325,21 +381,21 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => setActiveNavTab('community')}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap ${
+                activeNavTab === 'community' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
+              }`}
+            >
+              Comunidade
+            </button>
+            <button
+              type="button"
               onClick={() => setActiveNavTab('web_search')}
               className={`flex-1 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap ${
                 activeNavTab === 'web_search' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
               }`}
             >
               Busca Web
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveNavTab('presets')}
-              className={`flex-1 py-1.5 text-xs font-semibold rounded-lg whitespace-nowrap ${
-                activeNavTab === 'presets' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600'
-              }`}
-            >
-              Modelos
             </button>
           </div>
 
@@ -515,11 +571,11 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => setActiveNavTab('web_search')}
+                  onClick={() => setActiveNavTab('community')}
                   className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
                 >
                   <BookOpen className="w-3.5 h-3.5 text-slate-600" />
-                  Ou Buscar Referências Gratuitas na Internet
+                  Explorar Biblioteca Comunitária & Enviar Exemplo
                 </button>
               </div>
 
@@ -538,8 +594,21 @@ export default function App() {
             </div>
           )}
 
-          {/* TAB 2 & 3: WEB SEARCH & PRESETS */}
-          {(activeNavTab === 'web_search' || activeNavTab === 'presets') && (
+          {/* TAB 2: COMMUNITY LIBRARY & SYSTEM LOGS (Firebase Firestore) */}
+          {activeNavTab === 'community' && (
+            <CommunityLibraryPanel
+              currentUser={currentUser}
+              authReady={authReady}
+              currentWorksheet={worksheet}
+              onLoadWorksheet={(doc) => {
+                setWorksheet(doc);
+                setSelectedType(doc.activityType);
+              }}
+            />
+          )}
+
+          {/* TAB 3: WEB SEARCH & PRESETS */}
+          {activeNavTab === 'web_search' && (
             <WebReferencePanel
               currentTheme={themeInput}
               currentGoal={goalInput}
@@ -564,7 +633,7 @@ export default function App() {
                   Meu Caderno de Atividades Salvas
                 </h2>
                 <p className="text-xs text-slate-600 mt-0.5">
-                  Suas folhas personalizadas ficam salvas gratuitamente neste navegador para reutilizar quando quiser.
+                  Suas folhas personalizadas ficam salvas neste navegador para reutilizar quando quiser.
                 </p>
               </div>
 
@@ -665,7 +734,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* Save & Print Actions */}
+            {/* Save, Share Community & Print Actions */}
             <div className="flex items-center gap-2">
               {saveFeedback && (
                 <span className="text-xs font-semibold text-emerald-700">
@@ -674,11 +743,19 @@ export default function App() {
               )}
               <button
                 type="button"
+                onClick={handleQuickShareCommunity}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-sky-800 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                Publicar na Comunidade
+              </button>
+              <button
+                type="button"
                 onClick={handleSaveToNotebook}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Bookmark className="w-3.5 h-3.5" />
-                Salvar no Caderno
+                Salvar
               </button>
               <button
                 type="button"
@@ -686,7 +763,7 @@ export default function App() {
                 className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Printer className="w-3.5 h-3.5" />
-                Imprimir Folha A4
+                Imprimir A4
               </button>
             </div>
           </div>
