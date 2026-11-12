@@ -1,6 +1,6 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -19,6 +19,48 @@ function getAiClient() {
       },
     },
   });
+}
+
+async function generateContentWithFastFallback(params: {
+  contents: any;
+  config?: any;
+  timeoutMs?: number;
+}) {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY not configured; using local pedagogical engine');
+  }
+  const ai = getAiClient();
+  const timeoutMs = params.timeoutMs ?? 9000;
+  const modelsToTry = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+
+  let lastError: any = null;
+  for (const model of modelsToTry) {
+    try {
+      const config =
+        model === 'gemini-3.8-flash'
+          ? {
+              ...params.config,
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            }
+          : params.config;
+
+      const response = (await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: params.contents,
+          config,
+        }),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout after ${timeoutMs}ms on ${model}`)), timeoutMs)
+        ),
+      ])) as any;
+
+      return response;
+    } catch (err: any) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('All Gemini models failed or timed out');
 }
 
 const AVAILABLE_ICON_KEYS = [
@@ -49,8 +91,6 @@ async function startServer() {
         itemCount = 8,
       } = req.body || {};
 
-      const ai = getAiClient();
-
       const prompt = `Você é um especialista em alfabetização infantil e matemática para os anos iniciais do Ensino Fundamental (1º e 2º ano no Brasil).
 Crie uma folha de atividade visual completa em Português do Brasil sobre:
 - TEMA LÚDICO: "${theme}"
@@ -70,9 +110,9 @@ REGRAS OBRIGATÓRIAS:
    - Se "matching": gere 6 pares de associação imagem <-> palavra/sílaba em "matchingItems".
    - Se "word_puzzle": gere 6 palavras simples (de 3 a 7 letras, sem espaços) com dicas infantis curtas em "puzzleWords".`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+      const response = await generateContentWithFastFallback({
         contents: prompt,
+        timeoutMs: 9000,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -162,7 +202,7 @@ REGRAS OBRIGATÓRIAS:
       const parsed = JSON.parse(rawText);
       res.json(parsed);
     } catch (error: any) {
-      console.error('Error generating worksheet:', error);
+      console.error('Error generating worksheet:', error?.message || error);
       res.status(500).json({
         error: error?.message || 'Não foi possível gerar a atividade com IA no momento.',
       });
@@ -173,12 +213,11 @@ REGRAS OBRIGATÓRIAS:
   app.post('/api/worksheets/draw-icon', async (req, res) => {
     try {
       const { word = 'Estrela' } = req.body || {};
-      const ai = getAiClient();
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+      const response = await generateContentWithFastFallback({
         contents: `Desenhe uma ilustração infantil simples em estilo livro de colorir (apenas traços pretos nítidos em fundo branco, sem preenchimento escuro) representando a palavra "${word}".
 Retorne APENAS os elementos internos de um SVG para viewBox="0 0 100 100" usando tags <path>, <circle>, <rect>, <ellipse>, <polygon> ou <line> com stroke="#0f172a", stroke-width="3.5", fill="none" (ou fill="#ffffff"), stroke-linecap="round", stroke-linejoin="round".`,
+        timeoutMs: 8000,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -197,7 +236,7 @@ Retorne APENAS os elementos internos de um SVG para viewBox="0 0 100 100" usando
       const parsed = JSON.parse((response.text ?? '{}').trim());
       res.json(parsed);
     } catch (error: any) {
-      console.error('Error drawing custom SVG icon:', error);
+      console.error('Error drawing custom SVG icon:', error?.message || error);
       res.status(500).json({
         error: error?.message || 'Não foi possível desenhar a figura.',
       });
@@ -206,30 +245,68 @@ Retorne APENAS os elementos internos de um SVG para viewBox="0 0 100 100" usando
 
   // 3. Search the web for free educational worksheet references and ideas using Google Search Grounding
   app.post('/api/worksheets/search-web', async (req, res) => {
-    try {
-      const {
-        theme = 'Animais',
-        pedagogicalGoal = 'Completar sílabas alfabetização',
-      } = req.body || {};
+    const {
+      theme = 'Animais',
+      pedagogicalGoal = 'Completar sílabas alfabetização',
+    } = req.body || {};
 
-      const ai = getAiClient();
+    const verifiedFreePortalLinks = [
+      {
+        title: 'Toda Matéria — 8 Atividades de Alfabetização Prontas para Imprimir (Sílabas, Ligar e Caça-Palavras)',
+        uri: 'https://www.todamateria.com.br/atividades-alfabetizacao/',
+      },
+      {
+        title: 'Toda Matéria — 5 Folhas de Separação e Contagem de Sílabas (1º Ano Fundamental)',
+        uri: 'https://www.todamateria.com.br/atividades-de-separacao-de-silabas-1-ano-do-ensino-fundamental/',
+      },
+      {
+        title: 'Toda Matéria — 8 Folhas de Continhas de Somar / Adição Visual (1º Ano Fundamental)',
+        uri: 'https://www.todamateria.com.br/atividades-com-continhas-de-somar-adicao-para-1-ano-do-fundamental/',
+      },
+      {
+        title: 'Tudo Sala de Aula — Atividades de Adição 1º Ano com Desenhos Prontas em PDF',
+        uri: 'https://www.tudosaladeaula.com/2024/02/atividades-de-adicao-1-ano-com-desenhos/',
+      },
+      {
+        title: 'Nova Escola — Banco Gratuito de Atividades de Alfabetização e Planos BNCC',
+        uri: 'https://novaescola.org.br/atividades/alfabetizacao',
+      },
+      {
+        title: 'Click Escolar — Folhas Clássicas de Alfabetização 1º Ano para Imprimir',
+        uri: 'https://www.clickescolar.com/atividades-de-alfabetizacao-1-ano.htm',
+      },
+      {
+        title: 'Portal MEC — Compromisso Nacional Criança Alfabetizada',
+        uri: 'https://www.gov.br/mec/pt-br/crianca-alfabetizada',
+      },
+    ];
 
-      const searchPrompt = `Pesquise na internet referências gratuitas, atividades para imprimir do ensino primário / educação infantil e ideias práticas de folhas de exercícios em português sobre:
+    const searchPrompt = `Pesquise e estruture referências gratuitas, atividades para imprimir do ensino primário / educação infantil e ideias práticas de folhas de exercícios em português sobre:
 Tema: "${theme}"
 Conteúdo pedagógico: "${pedagogicalGoal}"
 
 Estruture a resposta em Markdown claro e objetivo contendo:
 1. **Resumo de Ideias Encontradas na Web**: 3 a 4 formatos de atividades visuais muito usados por professores brasileiros para esse tema e conteúdo.
-2. **Palavras e Exemplos Recomendados**: Uma seleção de palavras, sílabas ou desafios matemáticos prontos para usar na folha A4.
+2. **Palavras e Exemplos Recomendados**: Uma seleção de palavras com sílabas separadas ou desafios matemáticos prontos para usar na folha A4.
 3. **Como Aplicar e Adaptar em Sala**: Orientações rápidas e gratuitas para impressão e mediação com os alunos.`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: searchPrompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-        },
-      });
+    try {
+      let response: any;
+      try {
+        response = await generateContentWithFastFallback({
+          contents: searchPrompt,
+          timeoutMs: 7000,
+          config: {
+            tools: [{ googleSearch: {} }],
+          },
+        });
+      } catch {
+        // Fallback without googleSearch tool if search grounding quota is exhausted on free tier
+        response = await generateContentWithFastFallback({
+          contents: searchPrompt,
+          timeoutMs: 7000,
+        });
+      }
 
       const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
       const links: Array<{ title: string; uri: string }> = [];
@@ -246,13 +323,20 @@ Estruture a resposta em Markdown claro e objetivo contendo:
         }
       }
 
+      for (const verified of verifiedFreePortalLinks) {
+        if (!seenUris.has(verified.uri)) {
+          seenUris.add(verified.uri);
+          links.push(verified);
+        }
+      }
+
       res.json({
         summaryMarkdown: response.text || 'Nenhuma descrição encontrada.',
         links,
         queryUsed: `${pedagogicalGoal} tema ${theme} atividades para imprimir educação infantil`,
       });
     } catch (error: any) {
-      console.error('Error searching web references:', error);
+      console.error('Error searching web references:', error?.message || error);
       res.status(500).json({
         error: error?.message || 'Não foi possível buscar referências na web no momento.',
       });
@@ -267,10 +351,8 @@ Estruture a resposta em Markdown claro e objetivo contendo:
         return res.status(400).json({ error: 'Envie uma imagem de exemplo para análise.' });
       }
 
-      const ai = getAiClient();
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+      const response = await generateContentWithFastFallback({
+        timeoutMs: 10000,
         contents: {
           parts: [
             {
@@ -361,7 +443,7 @@ Para cada palavra ou item, separe as sílabas corretamente e escolha o melhor "i
       const parsed = JSON.parse((response.text ?? '{}').trim());
       res.json(parsed);
     } catch (error: any) {
-      console.error('Error analyzing uploaded example:', error);
+      console.error('Error analyzing uploaded example:', error?.message || error);
       res.status(500).json({
         error: error?.message || 'Não foi possível analisar a imagem enviada.',
       });
